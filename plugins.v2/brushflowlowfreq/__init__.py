@@ -3668,7 +3668,7 @@ class BrushFlowLowFreq(_PluginBase):
         download_speeds = []
         start_time = time.time()
         for _ in range(sample_count):
-            downloader_info = self.__get_downloader_info()
+            downloader_info = self.__get_selected_downloader_info()
             if downloader_info:
                 upload_speeds.append(downloader_info.upload_speed or 0)
                 download_speeds.append(downloader_info.download_speed or 0)
@@ -3684,6 +3684,30 @@ class BrushFlowLowFreq(_PluginBase):
                      f"平均下载带宽 {StringUtils.str_filesize(avg_download_speed)}, "
                      f"采样次数={sample_count}, 时长={total_duration:.2f} 秒")
         return avg_upload_speed, avg_download_speed
+
+    def __get_selected_downloader_info(self) -> schemas.DownloaderInfo:
+        """
+        获取当前选中的下载器的实时信息
+        """
+        try:
+            brush_config = self.__get_brush_config()
+            downloader = self.downloader
+            if not downloader:
+                return 0
+
+            torrents = downloader.transfer_info()
+            if torrents is None:
+                logger.warning("获取下载实时信息失败，可能是下载器连接发生异常")
+                return 0
+
+            return schemas.DownloaderInfo(
+                download_speed=info.get("dl_info_speed"),
+                upload_speed=info.get("up_info_speed"),
+                download_size=info.get("dl_info_data"),
+                upload_size=info.get("up_info_data"))
+        except Exception as e:
+            logger.error(f"获取下载实时信息发生异常: {e}")
+            return 0
 
     def __get_downloader_info(self) -> schemas.DownloaderInfo:
         """
