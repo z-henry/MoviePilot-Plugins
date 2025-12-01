@@ -247,7 +247,7 @@ class BrushFlowHenryZ(_PluginBase):
     # 插件名称
     plugin_name = "站点刷流（HENRYZ）"
     # 插件描述
-    plugin_desc = "自动托管刷流，将会提高对应站点的访问频率。（HENRYZ）""
+    plugin_desc = "自动托管刷流，将会提高对应站点的访问频率。（HENRYZ）"
     # 插件图标
     plugin_icon = "brush.jpg"
     # 插件版本
