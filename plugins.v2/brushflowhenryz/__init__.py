@@ -149,7 +149,7 @@ class BrushConfig:
     @staticmethod
     def get_demo_site_config() -> str:
         desc = (
-            "// 以下为配置示例，请参考：https://github.com/InfinityPacer/MoviePilot-Plugins/blob/main/plugins.v2/brushflowlowfreq/README.md 进行配置\n"
+            "// 以下为配置示例，请参考：https://github.com/InfinityPacer/MoviePilot-Plugins/blob/main/plugins.v2/brushflowhenryz/README.md 进行配置\n"
             "// 如与全局保持一致的配置项，请勿在站点配置中配置\n"
             "// 注意无关内容需使用 // 注释\n")
         config = """[{
@@ -241,7 +241,7 @@ class BrushConfig:
         return self.__str__()
 
 
-class BrushFlowLowFreq(_PluginBase):
+class BrushFlowHenryZ(_PluginBase):
     # region 全局定义
 
     # 插件名称
@@ -257,7 +257,7 @@ class BrushFlowLowFreq(_PluginBase):
     # 作者主页
     author_url = "https://github.com/InfinityPacer"
     # 插件配置项ID前缀
-    plugin_config_prefix = "brushflowlowhenryz_"
+    plugin_config_prefix = "brushflowhenryz_"
     # 加载顺序
     plugin_order = 22
     # 可使用的用户级别
@@ -453,7 +453,7 @@ class BrushFlowLowFreq(_PluginBase):
                 logger.info(f"站点刷流定时服务启动，执行周期 {cron}")
                 cron_trigger = CronTrigger.from_crontab(cron)
                 services.append({
-                    "id": "BrushFlowLowFreq",
+                    "id": "BrushFlowHenryZ",
                     "name": "站点刷流（低频版）服务",
                     "trigger": cron_trigger,
                     "func": self.brush
@@ -461,7 +461,7 @@ class BrushFlowLowFreq(_PluginBase):
             else:
                 logger.info(f"站点刷流定时服务启动，时间间隔 {self._brush_interval} 分钟")
                 services.append({
-                    "id": "BrushFlowLowFreq",
+                    "id": "BrushFlowHenryZ",
                     "name": "站点刷流（低频版）服务",
                     "trigger": "interval",
                     "func": self.brush,
@@ -471,7 +471,7 @@ class BrushFlowLowFreq(_PluginBase):
         if brush_config.enabled:
             logger.info(f"站点刷流检查定时服务启动，时间间隔 {self._check_interval} 分钟")
             services.append({
-                "id": "BrushFlowLowFreqCheck",
+                "id": "BrushFlowHenryZCheck",
                 "name": "站点刷流（低频版）检查服务",
                 "trigger": "interval",
                 "func": self.check,
@@ -1688,7 +1688,7 @@ class BrushFlowLowFreq(_PluginBase):
                                             {
                                                 'component': 'a',
                                                 'props': {
-                                                    'href': 'https://github.com/InfinityPacer/MoviePilot-Plugins/blob/main/plugins.v2/brushflowlowfreq/README.md',
+                                                    'href': 'https://github.com/InfinityPacer/MoviePilot-Plugins/blob/main/plugins.v2/brushflowhenryz/README.md',
                                                     'target': '_blank'
                                                 },
                                                 'content': [
@@ -1816,7 +1816,7 @@ class BrushFlowLowFreq(_PluginBase):
                                                                     {
                                                                         'component': 'a',
                                                                         'props': {
-                                                                            'href': 'https://github.com/InfinityPacer/MoviePilot-Plugins/blob/main/plugins.v2/brushflowlowfreq/README.md',
+                                                                            'href': 'https://github.com/InfinityPacer/MoviePilot-Plugins/blob/main/plugins.v2/brushflowhenryz/README.md',
                                                                             'target': '_blank'
                                                                         },
                                                                         'content': [
