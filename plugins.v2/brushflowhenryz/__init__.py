@@ -251,7 +251,7 @@ class BrushFlowHenryZ(_PluginBase):
     # 插件图标
     plugin_icon = "brush.jpg"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     # 插件作者
     plugin_author = "jxxghp,InfinityPacer"
     # 作者主页
@@ -3695,8 +3695,8 @@ class BrushFlowHenryZ(_PluginBase):
             if not downloader:
                 return 0
 
-            torrents = downloader.transfer_info()
-            if torrents is None:
+            info = downloader.transfer_info()
+            if info is None:
                 logger.warning("获取下载实时信息失败，可能是下载器连接发生异常")
                 return 0
 
