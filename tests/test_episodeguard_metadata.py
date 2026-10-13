@@ -48,13 +48,13 @@ class ResolverTests(unittest.TestCase):
     def test_invalid_magnet_does_not_probe(self):
         with patch.object(self.resolver, "_probe") as probe:
             with self.assertRaises(metadata.MetadataUnavailable):
-                self.resolver.resolve("magnet:?xt=urn:btih:test", "source")
+                self.resolver.resolve("magnet:?xt=urn:btih:test")
             probe.assert_not_called()
 
     def test_success_cache_shared_by_hash(self):
         with patch.object(self.resolver, "_probe", return_value=b"metadata") as probe:
             for suffix in ("&dn=one", "&dn=two"):
-                self.assertEqual(self.resolver.resolve(MAGNET + suffix, "source"), b"metadata")
+                self.assertEqual(self.resolver.resolve(MAGNET + suffix), b"metadata")
             self.assertEqual(probe.call_count, 1)
 
     def test_failure_cache_expires(self):
@@ -62,56 +62,45 @@ class ResolverTests(unittest.TestCase):
             with patch.object(self.resolver, "_probe", side_effect=metadata.MetadataUnavailable("timeout")) as probe:
                 for _ in range(2):
                     with self.assertRaises(metadata.MetadataUnavailable):
-                        self.resolver.resolve(MAGNET, "source")
+                        self.resolver.resolve(MAGNET)
                 self.assertEqual(probe.call_count, 1)
                 clock.return_value = 10 + metadata.FAILURE_TTL + 1
                 with self.assertRaises(metadata.MetadataUnavailable):
-                    self.resolver.resolve(MAGNET, "source")
+                    self.resolver.resolve(MAGNET)
                 self.assertEqual(probe.call_count, 2)
 
-    def test_search_budget_counts_only_probe_time_and_resets(self):
+    def test_each_candidate_keeps_full_timeout_after_prior_failures(self):
         with patch.object(metadata.time, "monotonic", return_value=10) as clock:
-            self.resolver.begin_search("Subscribe|87")
-            # Time spent on other MP work must not consume the probe budget.
-            clock.return_value = 100
-            costs = iter((15, 10, 5, 1))
+            attempts = []
 
-            def probe_time(_magnet, _timeout, _proxy):
-                clock.return_value += next(costs)
-                return b"metadata"
+            def probe_time(magnet, timeout, proxy):
+                attempts.append(timeout)
+                clock.return_value += timeout
+                if len(attempts) <= 3:
+                    raise metadata.MetadataUnavailable("磁力元数据获取超时")
+                return b"valid metadata for later candidate"
 
-            with patch.object(self.resolver, "_probe", side_effect=probe_time) as probe:
-                self.resolver.resolve(MAGNET, "Subscribe|87")
-                self.assertEqual(probe.call_args.args[1], 15)
-                self.resolver.resolve("magnet:?xt=urn:btih:" + "01" * 20, "Subscribe|87")
-                self.assertEqual(probe.call_args.args[1], 15)
-                self.resolver.resolve("magnet:?xt=urn:btih:" + "02" * 20, "Subscribe|87")
-                self.assertEqual(probe.call_args.args[1], 5)
-                with self.assertRaisesRegex(metadata.MetadataUnavailable, "30 秒"):
-                    self.resolver.resolve("magnet:?xt=urn:btih:" + "03" * 20, "Subscribe|87")
-                self.resolver.begin_search("Subscribe|87")
-                self.resolver.resolve("magnet:?xt=urn:btih:" + "03" * 20, "Subscribe|87")
-                self.assertEqual(probe.call_args.args[1], 15)
+            with patch.object(self.resolver, "_probe", side_effect=probe_time):
+                for value in ("01", "02", "03"):
+                    with self.assertRaises(metadata.MetadataUnavailable):
+                        self.resolver.resolve("magnet:?xt=urn:btih:" + value * 20)
+                content = self.resolver.resolve("magnet:?xt=urn:btih:" + "04" * 20)
+        self.assertEqual(content, b"valid metadata for later candidate")
+        self.assertEqual(attempts, [15, 15, 15, 15])
 
     def test_conflicting_hashes_rejected(self):
         with self.assertRaisesRegex(metadata.MetadataUnavailable, "相互冲突"):
             metadata.magnet_key(MAGNET + "&xt=urn:btih:" + "00" * 20)
 
-    def test_cached_success_available_after_search_deadline(self):
-        self.resolver._remember(metadata.magnet_key(MAGNET), b"metadata", "", 3600)
-        self.resolver._budgets["source"] = [0]
-        self.assertEqual(self.resolver.resolve(MAGNET, "source"), b"metadata")
-
     def test_concurrency_limit_does_not_queue(self):
         self.resolver._slots.acquire()
         self.resolver._slots.acquire()
         with self.assertRaisesRegex(metadata.MetadataUnavailable, "并发"):
-            self.resolver.resolve(MAGNET, "source")
+            self.resolver.resolve(MAGNET)
         self.resolver._slots.release()
         self.resolver._slots.release()
 
-    def test_concurrent_probes_share_reserved_search_budget(self):
-        self.resolver.begin_search("Subscribe|87")
+    def test_concurrency_releases_slots_for_next_candidate(self):
         barrier = threading.Barrier(3)
         release = threading.Event()
         failures = []
@@ -124,7 +113,7 @@ class ResolverTests(unittest.TestCase):
 
         def run(uri):
             try:
-                self.resolver.resolve(uri, "Subscribe|87")
+                self.resolver.resolve(uri)
             except Exception as error:
                 failures.append(error)
 
@@ -135,13 +124,16 @@ class ResolverTests(unittest.TestCase):
                 thread.start()
             try:
                 barrier.wait(timeout=3)
-                with self.assertRaisesRegex(metadata.MetadataUnavailable, "30 秒"):
-                    self.resolver.resolve(MAGNET, "Subscribe|87")
+                with self.assertRaisesRegex(metadata.MetadataUnavailable, "并发"):
+                    self.resolver.resolve(MAGNET)
             finally:
                 release.set()
                 for thread in threads:
                     thread.join(3)
         self.assertEqual(failures, [])
+        with patch.object(self.resolver, "_probe", return_value=b"metadata") as next_probe:
+            self.assertEqual(self.resolver.resolve(MAGNET), b"metadata")
+            self.assertEqual(next_probe.call_args.args[1], 15)
 
     def test_actual_hung_process_is_terminated_at_deadline(self):
         real_popen = subprocess.Popen
@@ -198,7 +190,7 @@ class ResolverTests(unittest.TestCase):
         self.resolver.stop()
         process.kill.assert_called_once()
         with self.assertRaises(metadata.MetadataUnavailable):
-            self.resolver.resolve(MAGNET, "source")
+            self.resolver.resolve(MAGNET)
 
 
 class ProxyTests(unittest.TestCase):
