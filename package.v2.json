@@ -11,5 +11,19 @@
             "v1.0.3": "开始下载的总带宽判断改为当前下载器带宽",
             "v1.0.0": "基于4.3.1版本开发"
         }
+    },
+    "EpisodeGuard": {
+        "name": "下载季集校验",
+        "description": "下载前核对订阅目标与种子内部视频季集，冲突时跳过并继续择优。",
+        "labels": "下载,订阅,动漫",
+        "version": "1.0.0",
+        "icon": "episodeguard.svg",
+        "author": "henryz",
+        "level": 1,
+        "system_version": ">=2.15.6,<3",
+        "history": {
+            "v1.0.0": "通过 ResourceDownload 事件校验内部文件季集，支持订阅识别词、分集选择与拦截记录。"
+        },
+        "project_url": "https://github.com/z-henry/MoviePilot-Plugins/tree/main/plugins.v2/episodeguard"
     }
 }
