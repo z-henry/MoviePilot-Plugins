@@ -47,7 +47,8 @@ def load_plugin():
         "app.chain.subscribe": module("app.chain.subscribe", SubscribeChain=MagicMock()),
         "app.plugins": module("app.plugins", _PluginBase=FakePluginBase),
         "app.schemas.types": module("app.schemas.types", MediaType=MediaType,
-                                   ChainEventType=NS(ResourceDownload="resource.download")),
+                                   ChainEventType=NS(ResourceDownload="resource.download",
+                                                     ResourceSelection="resource.selection")),
         "app.core.event": module("app.core.event", Event=object, eventmanager=eventmanager),
         "app.log": module("app.log", logger=MagicMock()),
         "app.core.metainfo": module("app.core.metainfo", MetaInfoPath=MagicMock()),
@@ -172,6 +173,36 @@ class GuardTests(unittest.TestCase):
     def test_indirect_magnet_result_rejected(self):
         self.guard.DownloadChain.return_value.download_torrent.return_value = ("magnet:?test", "", [])
         self.assertTrue(self.run_guard().cancel)
+
+    def test_magnet_metadata_checked_with_existing_policy(self):
+        item = event()
+        item.event_data.context.torrent_info.enclosure = "magnet:?xt=urn:btih:" + "ab" * 20
+        self.guard.MetaInfoPath.return_value = meta(3, (2,))
+        with patch.object(self.plugin._metadata, "resolve", return_value=b"metadata") as resolve:
+            self.plugin.on_resource_download(item)
+        self.assertTrue(item.event_data.cancel)
+        self.assertIn("S03", item.event_data.reason)
+        self.guard.DownloadChain.assert_not_called()
+        resolve.assert_called_once()
+
+    def test_indirect_url_magnet_metadata_can_pass(self):
+        self.guard.DownloadChain.return_value.download_torrent.return_value = ("magnet:?test", "", [])
+        with patch.object(self.plugin._metadata, "resolve", return_value=b"metadata"):
+            self.assertFalse(self.run_guard().cancel)
+
+    def test_unknown_magnet_setting_does_not_disable_verified_conflict(self):
+        self.plugin._block_unverifiable = False
+        self.guard.MetaInfoPath.return_value = meta(3, (2,))
+        item = event()
+        item.event_data.context.torrent_info.enclosure = "magnet:?xt=urn:btih:" + "ab" * 20
+        with patch.object(self.plugin._metadata, "resolve", return_value=b"metadata"):
+            self.plugin.on_resource_download(item)
+        self.assertTrue(item.event_data.cancel)
+
+    def test_selection_resets_search_budget(self):
+        with patch.object(self.plugin._metadata, "begin_search") as begin:
+            self.plugin.on_resource_selection(NS(event_data=NS(origin="Subscribe|87", source="")))
+        begin.assert_called_once_with("Subscribe|87")
 
     def test_metadata_fetch_failure_rejected(self):
         self.guard.DownloadChain.return_value.download_torrent.return_value = (None, "", [])

@@ -1,6 +1,6 @@
 """Read-only, in-memory probe against the deployed V2 parsing libraries.
 
-Run with: python3 scripts/native_probe.py [--sudo]
+Run with: python3 scripts/episodeguard_native_probe.py [--sudo]
 No host application is imported, no torrent is fetched, no files are written in
 the container, and python -B suppresses bytecode writes. App boundaries are fake.
 """
@@ -19,7 +19,7 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     sources = {name: (root / "plugins.v2/episodeguard" / name).read_text()
-               for name in ("__init__.py", "policy.py")}
+               for name in ("__init__.py", "policy.py", "metadata.py")}
     probe = r'''
 import ast, json, sys, types
 from enum import Enum
@@ -45,7 +45,7 @@ logger = NS(info=lambda *a: None, debug=lambda *a: None, warn=lambda *a: None,
             error=lambda *a: None)
 for name in ['app','app.chain','app.core','app.schemas','app.helper']: mod(name)
 mod('app.plugins', _PluginBase=Base)
-mod('app.schemas.types', MediaType=MediaType, ChainEventType=NS(ResourceDownload='download'))
+mod('app.schemas.types', MediaType=MediaType, ChainEventType=NS(ResourceDownload='download', ResourceSelection='selection'))
 mod('app.core.event', Event=object, eventmanager=NS(register=lambda *a, **k: lambda f: f))
 mod('app.log', logger=logger)
 mod('app.core.config', settings=NS(RMT_MEDIAEXT=['.mkv','.mp4']))
@@ -90,6 +90,8 @@ mod('app.chain.subscribe', SubscribeChain=lambda: NS(get_subscribe_by_source=lam
 package=mod('episodeguard')
 policy=mod('episodeguard.policy')
 exec(sources['policy.py'],policy.__dict__)
+metadata=mod('episodeguard.metadata')
+exec(sources['metadata.py'],metadata.__dict__)
 exec(sources['__init__.py'],package.__dict__)
 
 def bencode(value):

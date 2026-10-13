@@ -16,6 +16,7 @@ from app.helper.torrent import TorrentHelper
 from app.core.config import settings
 
 from .policy import DEFAULT_VIDEO_EXTENSIONS, FileEpisodes, Verdict, check_files, describe, video_paths
+from .metadata import MetadataResolver, MetadataUnavailable
 
 
 class CheckUnavailable(ValueError):
@@ -26,7 +27,7 @@ class EpisodeGuard(_PluginBase):
     plugin_name = "下载季集校验"
     plugin_desc = "下载前核对种子内部视频的季集，冲突时跳过并继续订阅择优。"
     plugin_icon = "https://raw.githubusercontent.com/z-henry/MoviePilot-Plugins/main/icons/episodeguard.svg"
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     plugin_author = "henryz"
     author_url = "https://github.com/z-henry"
     plugin_config_prefix = "episodeguard_"
@@ -34,12 +35,15 @@ class EpisodeGuard(_PluginBase):
     auth_level = 1
 
     def init_plugin(self, config=None):
+        if getattr(self, "_metadata", None):
+            self._metadata.stop()
         config = config or {}
         self._enabled = bool(config.get("enabled", False))
         self._only_subscriptions = bool(config.get("only_subscriptions", True))
         self._block_unverifiable = bool(config.get("block_unverifiable", True))
         self._lock = RLock()
         self._records = list(self.get_data("records") or [])[:50]
+        self._metadata = MetadataResolver()
 
     def get_state(self):
         return self._enabled
@@ -55,8 +59,17 @@ class EpisodeGuard(_PluginBase):
         return []
 
     def stop_service(self):
-        # No timers, workers, patches, or persistent connections to stop.
-        pass
+        if getattr(self, "_metadata", None):
+            self._metadata.stop()
+
+    @eventmanager.register(ChainEventType.ResourceSelection)
+    def on_resource_selection(self, event: Event = None):
+        """Reset the shared magnet waiting budget for each subscription search."""
+        if not self._enabled or not event or not event.event_data:
+            return
+        source = getattr(event.event_data, "origin", "") or ""
+        if source.startswith("Subscribe|"):
+            self._metadata.begin_search(source)
 
     @staticmethod
     def _bounded_numbers(meta, kind):
@@ -115,14 +128,25 @@ class EpisodeGuard(_PluginBase):
         custom_words = getattr(subscription, "custom_words", None)
         words = custom_words.split("\n") if custom_words else None
         torrent = data.context.torrent_info
-        if not torrent.enclosure or torrent.enclosure.startswith("magnet:"):
-            raise CheckUnavailable("磁力链或空下载地址不能在提交下载前取得内部文件清单")
+        if not torrent.enclosure:
+            raise CheckUnavailable("资源没有可用的下载地址")
 
         # Reuse the host's credentials, indirect-URL handling, proxy and .torrent
         # cache. This fetches metadata only, never adds a downloader task.
-        content, folder, files = DownloadChain().download_torrent(torrent)
+        if torrent.enclosure.lower().startswith("magnet:"):
+            content = torrent.enclosure
+        else:
+            content, _, _ = DownloadChain().download_torrent(torrent)
+        if isinstance(content, str) and content.lower().startswith("magnet:"):
+            try:
+                content = self._metadata.resolve(
+                    content, origin,
+                    proxy=getattr(settings, "PROXY", None) if getattr(torrent, "site_proxy", False) else None,
+                )
+            except MetadataUnavailable as error:
+                raise CheckUnavailable(str(error)) from None
         if not content or isinstance(content, str):
-            raise CheckUnavailable("未取得可解析的 .torrent 文件（读取失败或返回磁力链）")
+            raise CheckUnavailable("未取得可解析的 .torrent 文件")
         # Parse from the content rather than trusting a partial cached list.
         folder, files = TorrentHelper().get_fileinfo_from_torrent_content(content)
         if len(files) > 10000:
@@ -208,7 +232,7 @@ class EpisodeGuard(_PluginBase):
             {"component": "VAlert", "props": {"type": "info", "variant": "tonal"},
              "text": "先读取种子内部文件，用整理识别器和订阅识别词核对季集。冲突时跳过当前候选，继续寻找资源。仅检查订阅下载默认开启。"},
             {"component": "VAlert", "props": {"type": "warning", "variant": "tonal"},
-             "text": "无法校验时默认跳过，包括磁力链、无法识别的文件和多季合集；关闭此选项会放行这类资源。读取 .torrent 可能增加一次站点请求，普通地址会复用 MP 的缓存。"},
+             "text": "只检查 MP 提供的资源：种子地址沿用 MP 获取逻辑，磁力链只获取 BT 元数据，不抓取详情页。每条最多等 15 秒，每次搜索累计最多等 30 秒；获取失败按上方开关跳过或放行。"},
         ]}], {"enabled": False, "only_subscriptions": True, "block_unverifiable": True}
 
     def get_page(self):
