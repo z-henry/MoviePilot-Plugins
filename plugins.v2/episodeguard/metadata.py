@@ -14,7 +14,6 @@ from urllib.parse import parse_qs, urlsplit
 
 MAX_METADATA = 2 * 1024 * 1024
 RESOURCE_TIMEOUT = 15
-SEARCH_TIMEOUT = 30
 CACHE_LIMIT = 128
 CACHE_BYTES = 16 * 1024 * 1024
 SUCCESS_TTL = 24 * 60 * 60
@@ -60,17 +59,8 @@ class MetadataResolver:
         self._lock = RLock()
         self._slots = BoundedSemaphore(2)
         self._cache = OrderedDict()
-        self._budgets = OrderedDict()
         self._processes = set()
         self._closed = False
-
-    def begin_search(self, source):
-        """ResourceSelection marks the start of one candidate download batch."""
-        with self._lock:
-            self._budgets[source] = [float(SEARCH_TIMEOUT)]
-            self._budgets.move_to_end(source)
-            while len(self._budgets) > CACHE_LIMIT:
-                self._budgets.popitem(last=False)
 
     def stop(self):
         """Stop only probes created by this resolver when the plugin reloads."""
@@ -80,8 +70,8 @@ class MetadataResolver:
                 if process.poll() is None:
                     process.kill()
 
-    def resolve(self, magnet, source, *, proxy=None):
-        """Fetch at most 2 MiB with a 15s resource and 30s search deadline."""
+    def resolve(self, magnet, *, proxy=None):
+        """Each uncached magnet gets its own 15s deadline, independent of others."""
         key = magnet_key(magnet)
         with self._lock:
             if self._closed:
@@ -94,26 +84,14 @@ class MetadataResolver:
                     raise MetadataUnavailable(cached[2])
                 return cached[1]
             self._cache.pop(key, None)
-            # Reserve waiting time under the same lock to bound concurrent probes.
-            # Refund unused time; ordinary downloads do not consume this budget.
-            budget = self._budgets.get(source)
-            timeout = min(RESOURCE_TIMEOUT, budget[0] if budget is not None else RESOURCE_TIMEOUT)
-            if timeout <= 0:
-                raise MetadataUnavailable("本次搜索的磁力校验等待已达 30 秒上限")
             if not self._slots.acquire(blocking=False):
                 raise MetadataUnavailable("磁力校验并发已达上限，本资源暂未校验")
-            if budget is not None:
-                budget[0] -= timeout
-        started = time.monotonic()
         try:
-            content = self._probe(magnet, timeout, proxy)
+            content = self._probe(magnet, RESOURCE_TIMEOUT, proxy)
         except MetadataUnavailable as error:
             self._remember(key, None, str(error), FAILURE_TTL)
             raise
         finally:
-            if budget is not None:
-                with self._lock:
-                    budget[0] += max(0, timeout - (time.monotonic() - started))
             self._slots.release()
         self._remember(key, content, "", SUCCESS_TTL)
         return content

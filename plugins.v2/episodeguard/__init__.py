@@ -27,7 +27,7 @@ class EpisodeGuard(_PluginBase):
     plugin_name = "下载季集校验"
     plugin_desc = "下载前核对种子内部视频的季集，冲突时跳过并继续订阅择优。"
     plugin_icon = "https://raw.githubusercontent.com/z-henry/MoviePilot-Plugins/main/icons/episodeguard.svg"
-    plugin_version = "1.1.0"
+    plugin_version = "1.1.1"
     plugin_author = "henryz"
     author_url = "https://github.com/z-henry"
     plugin_config_prefix = "episodeguard_"
@@ -61,15 +61,6 @@ class EpisodeGuard(_PluginBase):
     def stop_service(self):
         if getattr(self, "_metadata", None):
             self._metadata.stop()
-
-    @eventmanager.register(ChainEventType.ResourceSelection)
-    def on_resource_selection(self, event: Event = None):
-        """Reset the shared magnet waiting budget for each subscription search."""
-        if not self._enabled or not event or not event.event_data:
-            return
-        source = getattr(event.event_data, "origin", "") or ""
-        if source.startswith("Subscribe|"):
-            self._metadata.begin_search(source)
 
     @staticmethod
     def _bounded_numbers(meta, kind):
@@ -140,7 +131,7 @@ class EpisodeGuard(_PluginBase):
         if isinstance(content, str) and content.lower().startswith("magnet:"):
             try:
                 content = self._metadata.resolve(
-                    content, origin,
+                    content,
                     proxy=getattr(settings, "PROXY", None) if getattr(torrent, "site_proxy", False) else None,
                 )
             except MetadataUnavailable as error:
@@ -232,7 +223,7 @@ class EpisodeGuard(_PluginBase):
             {"component": "VAlert", "props": {"type": "info", "variant": "tonal"},
              "text": "先读取种子内部文件，用整理识别器和订阅识别词核对季集。冲突时跳过当前候选，继续寻找资源。仅检查订阅下载默认开启。"},
             {"component": "VAlert", "props": {"type": "warning", "variant": "tonal"},
-             "text": "只检查 MP 提供的资源：种子地址沿用 MP 获取逻辑，磁力链只获取 BT 元数据，不抓取详情页。每条最多等 15 秒，每次搜索累计最多等 30 秒；获取失败按上方开关跳过或放行。"},
+             "text": "只检查 MP 提供的资源：种子地址沿用 MP 获取逻辑，磁力链只获取 BT 元数据，不抓取详情页。每条磁力独立最多等 15 秒，前面资源超时不影响后面资源；获取失败按上方开关跳过或放行。"},
         ]}], {"enabled": False, "only_subscriptions": True, "block_unverifiable": True}
 
     def get_page(self):

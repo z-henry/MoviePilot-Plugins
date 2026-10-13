@@ -199,11 +199,6 @@ class GuardTests(unittest.TestCase):
             self.plugin.on_resource_download(item)
         self.assertTrue(item.event_data.cancel)
 
-    def test_selection_resets_search_budget(self):
-        with patch.object(self.plugin._metadata, "begin_search") as begin:
-            self.plugin.on_resource_selection(NS(event_data=NS(origin="Subscribe|87", source="")))
-        begin.assert_called_once_with("Subscribe|87")
-
     def test_metadata_fetch_failure_rejected(self):
         self.guard.DownloadChain.return_value.download_torrent.return_value = (None, "", [])
         self.assertTrue(self.run_guard().cancel)
