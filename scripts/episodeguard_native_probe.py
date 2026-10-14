@@ -19,7 +19,7 @@ def main():
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     sources = {name: (root / "plugins.v2/episodeguard" / name).read_text()
-               for name in ("__init__.py", "policy.py", "metadata.py")}
+               for name in ("__init__.py", "policy.py", "metadata.py", "overrides.py", "snapshots.py")}
     probe = r'''
 import ast, json, sys, types
 from enum import Enum
@@ -45,10 +45,12 @@ logger = NS(info=lambda *a: None, debug=lambda *a: None, warn=lambda *a: None,
             error=lambda *a: None)
 for name in ['app','app.chain','app.core','app.schemas','app.helper']: mod(name)
 mod('app.plugins', _PluginBase=Base)
-mod('app.schemas.types', MediaType=MediaType, ChainEventType=NS(ResourceDownload='download', ResourceSelection='selection'))
+mod('app.schemas.types', MediaType=MediaType,
+    EventType=NS(DownloadAdded='added',TransferFailed='failed'), SystemConfigKey=NS(CustomIdentifiers='words'),
+    ChainEventType=NS(ResourceDownload='download', ResourceSelection='selection',TransferIntercept='intercept'))
 mod('app.core.event', Event=object, eventmanager=NS(register=lambda *a, **k: lambda f: f))
 mod('app.log', logger=logger)
-mod('app.core.config', settings=NS(RMT_MEDIAEXT=['.mkv','.mp4']))
+mod('app.core.config', settings=NS(RMT_MEDIAEXT=['.mkv','.mp4'], RMT_SUBEXT=['.srt','.ass']))
 
 # Execute the actual V2 word matcher with only DB/config/log dependencies removed.
 tree = ast.parse(Path('/app/app/core/meta/words.py').read_text())
@@ -64,9 +66,14 @@ def native_meta(path, custom_words=None):
     # deployed native path parser. No live settings or database are imported.
     components=[words.prepare(part, custom_words)[0] for part in path.parts[1:]]
     p='/'+ '/'.join(components)
-    d=moviepilot_rust.parse_metainfo_path_fast(p, {'media_exts':['.mkv','.mp4'],'custom_words':[]})
+    options={'media_exts':['.mkv','.mp4','.srt','.ass'],'custom_words':custom_words or []}
+    d=moviepilot_rust.parse_metainfo_path_fast(str(path),options)
+    python_words=moviepilot_rust.parse_metainfo_path_fast(p,dict(options,custom_words=[]))
+    for key in ('type','begin_season','end_season','begin_episode','end_episode','resource_pix'):
+        assert d.get(key)==python_words.get(key), ('Rust/Python word matcher difference',path,key,d,python_words)
     s=d.get('begin_season'); e=d.get('begin_episode'); end=d.get('end_episode')
-    return NS(begin_season=s,end_season=d.get('end_season'),begin_episode=e,end_episode=end,
+    return NS(type=MediaType.TV if d.get('type')=='电视剧' else MediaType.MOVIE,
+              begin_season=s,end_season=d.get('end_season'),begin_episode=e,end_episode=end,
               season_list=[s if s is not None else 1] if d.get('type')=='电视剧' else [],
               episode_list=list(range(e,(end if end is not None else e)+1)) if e is not None else [])
 mod('app.core.metainfo', MetaInfoPath=native_meta)
@@ -92,6 +99,12 @@ policy=mod('episodeguard.policy')
 exec(sources['policy.py'],policy.__dict__)
 metadata=mod('episodeguard.metadata')
 exec(sources['metadata.py'],metadata.__dict__)
+overrides=mod('episodeguard.overrides')
+overrides.__package__='episodeguard'
+exec(sources['overrides.py'],overrides.__dict__)
+snapshots=mod('episodeguard.snapshots')
+snapshots.__package__='episodeguard'
+exec(sources['snapshots.py'],snapshots.__dict__)
 exec(sources['__init__.py'],package.__dict__)
 
 def bencode(value):
@@ -129,7 +142,68 @@ for label, names, ep, custom, folder, blocked in cases:
     instance.on_resource_download(NS(event_data=data))
     assert data.cancel==blocked, (label,data.cancel,data.reason)
     print(label, 'BLOCK' if data.cancel else 'PASS')
-print('native probe: 8 cases passed; no network, database or downloader writes')
+# Only an isolated in-memory SQLite DB; never import or connect to MP's DB.
+from sqlalchemy import Column,Integer,String,JSON,create_engine,select
+from sqlalchemy.orm import declarative_base,Session
+BaseORM=declarative_base()
+class History(BaseORM):
+    __tablename__='native_probe_history'
+    id=Column(Integer,primary_key=True)
+    download_hash=Column(String)
+    media_source=Column(String)
+    media_id=Column(String)
+    seasons=Column(String)
+    episodes=Column(String)
+    custom_words=Column(String)
+    note=Column(JSON)
+    date=Column(String)
+engine=create_engine('sqlite://')
+BaseORM.metadata.create_all(engine)
+def rows(hashes):
+    with engine.connect() as connection:
+        return [dict(r) for r in connection.execute(select(History.__table__).where(
+            History.download_hash.in_(hashes))).mappings()]
+mod('app.core.meta.words',WordsMatcher=lambda: words)
+mod('app.db.systemconfig_oper',SystemConfigOper=lambda: NS(get=lambda key: []))
+mod('app.utils.media',resolve_media_identity=lambda **kwargs: ('themoviedb','220542'))
+force_cases=[
+ ('inherit-conflict', [cases[0][1][0]], None, ''),
+ ('inherit-parent-season', ['Season 3/'+cases[0][1][0]], None, 'Show'),
+ ('inherit-existing-offset', [cases[0][1][0]], rule, ''),
+ ('inherit-unknown-episode', ['The.Apothecary.Diaries.1080p.mkv'], None, ''),
+ ('inherit-subtitle', [cases[0][1][0],cases[0][1][0].replace('.mkv','.chs.srt')], None, 'Show'),
+ ('inherit-brackets-unicode', ['[字幕组] 药屋少女的呢喃 - 02 [1080p].mkv'], None, ''),
+]
+for index,(label,names,custom,folder) in enumerate(force_cases):
+    state.update(content=content(names,folder), words=custom)
+    instance=package.EpisodeGuard(); instance.init_plugin({'enabled':True})
+    instance._mode='inherit'
+    instance._snapshots=snapshots.TaskSnapshots([],lambda value: None)
+    instance._snapshots.start(History,rows)
+    expected=NS(begin_season=1,end_season=None,begin_episode=50,end_episode=None,season_list=[1],episode_list=[50])
+    data=NS(cancel=False,source='',reason='',origin='Subscribe|{}',episodes={50},
+        context=NS(meta_info=expected,media_info=NS(type=MediaType.TV),
+                   torrent_info=NS(title=label,site_name='offline',enclosure='https://example.invalid/test.torrent')))
+    instance.on_resource_download(NS(event_data=data))
+    assert not data.cancel, (label,data.reason)
+    value=overrides.torrent_hashes(state['content'])[0]
+    with Session(engine) as session:
+        row=History(download_hash=value,media_source='themoviedb',media_id='220542',seasons='S01',episodes='E50',
+                    custom_words=custom,note={'source':data.origin},date=str(index))
+        session.add(row); session.commit()
+    saved=instance._snapshots.ready([value])
+    assert saved and saved['custom_words'], label
+    fileitem=NS(storage='local',path='/download/'+(folder+'/' if folder else '')+names[0])
+    actual=native_meta(Path(fileitem.path),saved['custom_words'].splitlines())
+    assert actual.season_list==[1] and actual.episode_list==[50], (label,actual)
+    instance._file_tasks=lambda fileitem: [NS(download_hash=value)]
+    check=NS(cancel=False,source='',reason='',fileitem=fileitem,meta=actual,mediainfo=data.context.media_info)
+    instance.on_transfer_intercept(NS(event_data=check))
+    assert not check.cancel,(label,check.reason)
+    instance.stop_service()
+    print(label,'S01E50, snapshot committed, transfer PASS')
+engine.dispose()
+print('native probe: 14 cases passed; no network, live database or downloader writes')
 '''
     code = "sources = " + repr(sources) + "\n" + probe
     password = None
