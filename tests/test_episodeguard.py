@@ -47,7 +47,9 @@ def load_plugin():
         "app.chain.subscribe": module("app.chain.subscribe", SubscribeChain=MagicMock()),
         "app.plugins": module("app.plugins", _PluginBase=FakePluginBase),
         "app.schemas.types": module("app.schemas.types", MediaType=MediaType,
+                                   EventType=NS(TransferFailed="transfer.failed", DownloadAdded="download.added"),
                                    ChainEventType=NS(ResourceDownload="resource.download",
+                                                     TransferIntercept="transfer.intercept",
                                                      ResourceSelection="resource.selection")),
         "app.core.event": module("app.core.event", Event=object, eventmanager=eventmanager),
         "app.log": module("app.log", logger=MagicMock()),
@@ -68,7 +70,7 @@ def load_plugin():
 
 
 def meta(season=1, episodes=(50,)):
-    return NS(title="药屋少女的呢喃", season_list=[season] if season is not None else [], episode_list=list(episodes),
+    return NS(type=MediaType.TV, title="药屋少女的呢喃", season_list=[season] if season is not None else [], episode_list=list(episodes),
               begin_season=season, end_season=None,
               begin_episode=min(episodes) if episodes else None,
               end_episode=max(episodes) if len(episodes) > 1 else None)
