@@ -72,7 +72,7 @@ class InheritTests(unittest.TestCase):
                 plans = self.plugin._snapshots.matching_hash(HASH)
                 self.assertEqual(plans[0]["target"], [1, 50])
                 self.assertEqual(plans[0]["identity"], ["themoviedb", "220542"])
-                self.assertIn("s=1-1;e=50-50", plans[0]["words"])
+                self.assertIn("s=1;e=50]}", plans[0]["words"])
                 self.assertEqual(plans[0]["names"], [NAME])
 
     def test_unknown_metadata_is_always_skipped_in_inherit(self):
@@ -112,7 +112,7 @@ class InheritTests(unittest.TestCase):
             ["S03E02 => S01E50"], prepare, {".mkv"}, {".srt"})
         result, _ = prepare(NAME, rules.splitlines())
         self.assertIn("S01E50.1080p", result)
-        self.assertIn("s=1-1;e=50-50", result)
+        self.assertIn("s=1;e=50]}", result)
         other, _ = prepare("Other.S03E01.mkv", rules.splitlines())
         self.assertEqual(other, "Other.S03E01.mkv")
         self.assertEqual(len(mapped), 2)
@@ -120,7 +120,7 @@ class InheritTests(unittest.TestCase):
 
     def test_unknown_number_can_be_overridden_but_ambiguous_files_cannot(self):
         rules, _, _ = self.override.build_words(["Show.mkv"], {(1, 50)}, [], prepare, {".mkv"}, {".srt"})
-        self.assertIn("e=50-50", prepare("Show.mkv", rules.splitlines())[0])
+        self.assertIn("e=50]}", prepare("Show.mkv", rules.splitlines())[0])
         for files in ([NAME, "sample/" + NAME], ["bad => title.mkv"], ["one.mkv", "two.mkv"]):
             with self.assertRaises(self.override.OverrideUnavailable):
                 self.override.build_words(files, {(1, 50)}, [], prepare, {".mkv"}, {".srt"})
@@ -134,6 +134,18 @@ class InheritTests(unittest.TestCase):
         self.plugin.init_plugin({"enabled": True, "block_unverifiable": False})
         self.assertEqual(self.plugin._mode, "validate")
         self.assertFalse(self.plugin._block_unverifiable)
+
+    def test_residual_range_is_rejected_even_when_it_contains_only_target(self):
+        self.enable_inherit(False)
+        for field, value in (("end_episode", 50), ("end_season", 1)):
+            parsed = meta()
+            setattr(parsed, field, value)
+            self.guard.MetaInfoPath.return_value = parsed
+            item = event()
+            self.plugin.on_resource_download(item)
+            self.assertTrue(item.event_data.cancel)
+            self.assertIn("仍带季集范围", item.event_data.reason)
+        self.assertEqual(self.plugin._snapshots.matching_hash(HASH), [])
 
     def transfer_fixture(self, ready=True, actual=None, value=HASH):
         self.enable_inherit(False)

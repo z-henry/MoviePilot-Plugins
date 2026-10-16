@@ -61,6 +61,18 @@ ns={'logger':logger, 'SystemConfigKey':NS(CustomIdentifiers='words')}
 exec(compile(tree,'native-words','exec'),ns)
 words=object.__new__(ns['WordsMatcher']); words.systemconfig=NS(get=lambda key: [])
 
+# Exercise MP's actual formatting properties; equal endpoints have the same
+# episode set as a scalar but produce different filenames/history strings.
+format_tree=ast.parse(Path('/app/app/core/meta/metabase.py').read_text())
+format_class=next(n for n in format_tree.body if isinstance(n,ast.ClassDef) and n.name=='MetaBase')
+format_methods=[n for n in format_class.body if isinstance(n,ast.FunctionDef)
+                and n.name in {'season','episode','season_episode'}]
+format_node=ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(
+    name='NativeFormat',bases=[],keywords=[],body=format_methods,decorator_list=[])],type_ignores=[]))
+format_env={'MediaType':MediaType}
+exec(compile(format_node,'native-episode-format','exec'),format_env)
+class ParsedMeta(NS,format_env['NativeFormat']): pass
+
 def native_meta(path, custom_words=None):
     # Preprocess each path component using host WordsMatcher, then use the
     # deployed native path parser. No live settings or database are imported.
@@ -72,7 +84,7 @@ def native_meta(path, custom_words=None):
     for key in ('type','begin_season','end_season','begin_episode','end_episode','resource_pix'):
         assert d.get(key)==python_words.get(key), ('Rust/Python word matcher difference',path,key,d,python_words)
     s=d.get('begin_season'); e=d.get('begin_episode'); end=d.get('end_episode')
-    return NS(type=MediaType.TV if d.get('type')=='电视剧' else MediaType.MOVIE,
+    return ParsedMeta(type=MediaType.TV if d.get('type')=='电视剧' else MediaType.MOVIE,
               begin_season=s,end_season=d.get('end_season'),begin_episode=e,end_episode=end,
               season_list=[s if s is not None else 1] if d.get('type')=='电视剧' else [],
               episode_list=list(range(e,(end if end is not None else e)+1)) if e is not None else [])
@@ -173,11 +185,51 @@ force_cases=[
  ('inherit-unknown-episode', ['The.Apothecary.Diaries.1080p.mkv'], None, ''),
  ('inherit-subtitle', [cases[0][1][0],cases[0][1][0].replace('.mkv','.chs.srt')], None, 'Show'),
  ('inherit-brackets-unicode', ['[字幕组] 药屋少女的呢喃 - 02 [1080p].mkv'], None, ''),
+ ('inherit-blue-box-26', ['Blue.Box.S02E26.1080p.NF.WEB-DL.DDP5.1.H.264-MWeb.mkv'], 'Blue Box S02 => Blue Box S01', '', 26),
+ ('inherit-blue-box-27', ['Blue.Box.S02E27.1080p.NF.WEB-DL.DDP5.1.H.264-MWeb.mkv'], 'Blue Box S02 => Blue Box S01', 'Blue.Box.S02.1080p.NF.WEB-DL.DDP5.1.H.264-MWeb', 27),
+ ('inherit-fx-03', ['[ANi] FX 戰士久留美 - 03 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4'], None, '', 3),
+ ('inherit-normalized-equal-end', ['Show.S03E01-E50.mkv'], None, ''),
 ]
-for index,(label,names,custom,folder) in enumerate(force_cases):
+for index,case in enumerate(force_cases):
+    label,names,custom,folder=case[:4]
+    episode=case[4] if len(case)>4 else 50
     state.update(content=content(names,folder), words=custom)
     instance=package.EpisodeGuard(); instance.init_plugin({'enabled':True})
     instance._mode='inherit'
+    instance._snapshots=snapshots.TaskSnapshots([],lambda value: None)
+    instance._snapshots.start(History,rows)
+    expected=NS(begin_season=1,end_season=None,begin_episode=episode,end_episode=None,season_list=[1],episode_list=[episode])
+    data=NS(cancel=False,source='',reason='',origin='Subscribe|{}',episodes={episode},
+        context=NS(meta_info=expected,media_info=NS(type=MediaType.TV),
+                   torrent_info=NS(title=label,site_name='offline',enclosure='https://example.invalid/test.torrent')))
+    instance.on_resource_download(NS(event_data=data))
+    assert not data.cancel, (label,data.reason)
+    value=overrides.torrent_hashes(state['content'])[0]
+    with Session(engine) as session:
+        row=History(download_hash=value,media_source='themoviedb',media_id='220542',seasons='S01',episodes=f'E{episode:02d}',
+                    custom_words=custom,note={'source':data.origin},date=str(index))
+        session.add(row); session.commit()
+    saved=instance._snapshots.ready([value])
+    assert saved and saved['custom_words'], label
+    fileitem=NS(storage='local',path='/download/'+(folder+'/' if folder else '')+names[0])
+    actual=native_meta(Path(fileitem.path),saved['custom_words'].splitlines())
+    assert actual.season_list==[1] and actual.episode_list==[episode], (label,actual)
+    assert actual.end_season is None and actual.end_episode is None,(label,actual)
+    assert actual.season=='S01' and actual.episode==f'E{episode:02d}',(label,actual.season,actual.episode)
+    assert actual.season_episode==f'S01 E{episode:02d}',(label,actual.season_episode)
+    instance._file_tasks=lambda fileitem: [NS(download_hash=value)]
+    check=NS(cancel=False,source='',reason='',fileitem=fileitem,meta=actual,mediainfo=data.context.media_info)
+    instance.on_transfer_intercept(NS(event_data=check))
+    assert not check.cancel,(label,check.reason)
+    instance.stop_service()
+    print(label,f'S01E{episode:02d}, native format and committed snapshot PASS')
+
+for label,name,folder in [
+    ('residual-file-range','Show.S03E01-E02.mkv',''),
+]:
+    state.update(content=content([name],folder),words=None)
+    instance=package.EpisodeGuard(); instance.init_plugin({'enabled':True})
+    instance._mode='inherit'; instance._block_unverifiable=False
     instance._snapshots=snapshots.TaskSnapshots([],lambda value: None)
     instance._snapshots.start(History,rows)
     expected=NS(begin_season=1,end_season=None,begin_episode=50,end_episode=None,season_list=[1],episode_list=[50])
@@ -185,25 +237,10 @@ for index,(label,names,custom,folder) in enumerate(force_cases):
         context=NS(meta_info=expected,media_info=NS(type=MediaType.TV),
                    torrent_info=NS(title=label,site_name='offline',enclosure='https://example.invalid/test.torrent')))
     instance.on_resource_download(NS(event_data=data))
-    assert not data.cancel, (label,data.reason)
-    value=overrides.torrent_hashes(state['content'])[0]
-    with Session(engine) as session:
-        row=History(download_hash=value,media_source='themoviedb',media_id='220542',seasons='S01',episodes='E50',
-                    custom_words=custom,note={'source':data.origin},date=str(index))
-        session.add(row); session.commit()
-    saved=instance._snapshots.ready([value])
-    assert saved and saved['custom_words'], label
-    fileitem=NS(storage='local',path='/download/'+(folder+'/' if folder else '')+names[0])
-    actual=native_meta(Path(fileitem.path),saved['custom_words'].splitlines())
-    assert actual.season_list==[1] and actual.episode_list==[50], (label,actual)
-    instance._file_tasks=lambda fileitem: [NS(download_hash=value)]
-    check=NS(cancel=False,source='',reason='',fileitem=fileitem,meta=actual,mediainfo=data.context.media_info)
-    instance.on_transfer_intercept(NS(event_data=check))
-    assert not check.cancel,(label,check.reason)
-    instance.stop_service()
-    print(label,'S01E50, snapshot committed, transfer PASS')
+    assert data.cancel,(label,data.reason)
+    instance.stop_service(); print(label,'BLOCK')
 engine.dispose()
-print('native probe: 14 cases passed; no network, live database or downloader writes')
+print('native probe: 19 cases passed; no network, live database or downloader writes')
 '''
     code = "sources = " + repr(sources) + "\n" + probe
     password = None
