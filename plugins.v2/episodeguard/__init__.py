@@ -29,7 +29,7 @@ class EpisodeGuard(_PluginBase):
     plugin_name = "下载季集校验"
     plugin_desc = "校验文件季集，或使用任务识别词沿用搜索匹配的季集。"
     plugin_icon = "https://raw.githubusercontent.com/z-henry/MoviePilot-Plugins/main/icons/episodeguard.svg"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     plugin_author = "henryz"
     author_url = "https://github.com/z-henry"
     plugin_config_prefix = "episodeguard_"
@@ -213,6 +213,8 @@ class EpisodeGuard(_PluginBase):
                                for e in self._bounded_numbers(meta, "episode"))
             if meta.type != MediaType.TV or actual != resource["expected"]:
                 raise OverrideUnavailable("生成的任务识别词未通过当前 MP 识别器预检")
+            if meta.end_season is not None or meta.end_episode is not None:
+                raise OverrideUnavailable("原文件或目录仍带季集范围，无法生成单集格式覆盖")
         plan = {"hashes": torrent_hashes(resource["content"]), "identity": list(identity),
                 "target": list(next(iter(resource["expected"]))), "origin": data.origin or "",
                 "words": text, "files": mapped, "names": names,

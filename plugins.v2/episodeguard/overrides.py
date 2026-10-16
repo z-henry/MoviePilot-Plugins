@@ -76,8 +76,9 @@ def build_words(files, expected, base_words, prepare, video_extensions, subtitle
             raise OverrideUnavailable("文件名不支持生成精确识别覆盖")
         path = PurePosixPath(converted)
         # MP supports explicit season/episode tags after word preprocessing.
-        # Set both ends so a pre-existing range cannot leak into this single episode.
-        result = path.stem + f" {{[type=tv;s={season}-{season};e={episode}-{episode}]}}" + path.suffix
+        # Equal range endpoints still render as E26-E26 in native rename/history.
+        # Use scalar tags; the caller rejects any residual source range in preflight.
+        result = path.stem + f" {{[type=tv;s={season};e={episode}]}}" + path.suffix
         # Replacement strings interpret backslashes; literal ones must be escaped.
         rule = "^" + re.escape(converted) + "$ => " + result.replace("\\", "\\\\")
         words.append(rule)
