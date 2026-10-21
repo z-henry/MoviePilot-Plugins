@@ -103,7 +103,10 @@ exec(compile(node,'native-torrent-helper','exec'),env)
 mod('app.helper.torrent', TorrentHelper=env['NativeTorrentHelper'])
 
 state={}
-mod('app.chain.download', DownloadChain=lambda: NS(download_torrent=lambda torrent: (state['content'],'',[])))
+def native_download(torrent):
+    state['download_calls']=state.get('download_calls',0)+1
+    return state['content'],'',[]
+mod('app.chain.download', DownloadChain=lambda: NS(download_torrent=native_download))
 mod('app.chain.subscribe', SubscribeChain=lambda: NS(get_subscribe_by_source=lambda origin:
     NS(season=1,start_episode=1,total_episode=60,custom_words=state.get('words'))))
 package=mod('episodeguard')
@@ -224,23 +227,43 @@ for index,case in enumerate(force_cases):
     instance.stop_service()
     print(label,f'S01E{episode:02d}, native format and committed snapshot PASS')
 
-for label,name,folder in [
-    ('residual-file-range','Show.S03E01-E02.mkv',''),
-]:
-    state.update(content=content([name],folder),words=None)
+pack_cases=[
+ ('pack-cyberpunk-season', [f'Cyberpunk.Edgerunners.S02E{i:02d}.1080p.mkv' for i in range(1,11)],2,list(range(1,11)),list(range(1,11)),None,0),
+ ('pack-selected-subset', [f'Cyberpunk.Edgerunners.S02E{i:02d}.mkv' for i in range(1,11)],2,list(range(1,11)),[5],'S03 => S02',0),
+ ('pack-late-files',['Show.S03E01.mkv','Show.S03E02.mkv'],1,[50],[50],None,1),
+ ('pack-late-merged',['Show.S03E01-E02.mkv'],1,[50],[50],None,1),
+ ('pack-unlabelled-season',['Show.S01E01.mkv','Show.S01E02.mkv'],1,[],[],None,0),
+ ('pack-multiple-seasons',['Show.S01E01.mkv','Show.S02E01.mkv'],1,[1],[1],None,0),
+]
+for index,(label,names,season,declared,requested,custom,fetches) in enumerate(pack_cases):
+    state.update(content=content(names,'Pack' if len(names)>1 else ''),words=custom,download_calls=0)
     instance=package.EpisodeGuard(); instance.init_plugin({'enabled':True})
     instance._mode='inherit'; instance._block_unverifiable=False
     instance._snapshots=snapshots.TaskSnapshots([],lambda value: None)
     instance._snapshots.start(History,rows)
-    expected=NS(begin_season=1,end_season=None,begin_episode=50,end_episode=None,season_list=[1],episode_list=[50])
-    data=NS(cancel=False,source='',reason='',origin='Subscribe|{}',episodes={50},
+    expected=NS(begin_season=season,end_season=None,
+        begin_episode=min(declared) if declared else None,end_episode=max(declared) if len(declared)>1 else None,
+        season_list=[season],episode_list=declared)
+    if label=='pack-multiple-seasons': expected.end_season=2; expected.season_list=[1,2]
+    data=NS(cancel=False,source='',reason='',origin='Subscribe|{}',episodes=set(requested),
         context=NS(meta_info=expected,media_info=NS(type=MediaType.TV),
                    torrent_info=NS(title=label,site_name='offline',enclosure='https://example.invalid/test.torrent')))
     instance.on_resource_download(NS(event_data=data))
-    assert data.cancel,(label,data.reason)
-    instance.stop_service(); print(label,'BLOCK')
+    assert not data.cancel,(label,data.reason)
+    assert state['download_calls']==fetches,(label,state['download_calls'])
+    assert data.episodes==set(requested) and expected.episode_list==declared,label
+    assert instance._records[0]['result']=='放行（合集原生整理）',label
+    value=overrides.torrent_hashes(state['content'])[0]
+    assert not instance._snapshots.matching_hash(value),label
+    with Session(engine) as session:
+        row=History(download_hash=value,media_source='themoviedb',media_id='220542',seasons=f'S{season:02d}',
+                    episodes='E01-E10',custom_words=custom,note={'source':data.origin},date=f'pack-{index}')
+        session.add(row); session.flush()
+        assert row.custom_words==custom and overrides.MARKER not in row.note,label
+        session.rollback()
+    instance.stop_service(); print(label,'native PASS, no plugin snapshot')
 engine.dispose()
-print('native probe: 19 cases passed; no network, live database or downloader writes')
+print('native probe: 24 cases passed; no network, live database or downloader writes')
 '''
     code = "sources = " + repr(sources) + "\n" + probe
     password = None

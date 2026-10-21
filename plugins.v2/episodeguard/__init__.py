@@ -29,7 +29,7 @@ class EpisodeGuard(_PluginBase):
     plugin_name = "下载季集校验"
     plugin_desc = "校验文件季集，或使用任务识别词沿用搜索匹配的季集。"
     plugin_icon = "https://raw.githubusercontent.com/z-henry/MoviePilot-Plugins/main/icons/episodeguard.svg"
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     plugin_author = "henryz"
     author_url = "https://github.com/z-henry"
     plugin_config_prefix = "episodeguard_"
@@ -130,7 +130,7 @@ class EpisodeGuard(_PluginBase):
     def _video_extensions():
         return frozenset(e.lower() for e in settings.RMT_MEDIAEXT) or DEFAULT_VIDEO_EXTENSIONS
 
-    def _load_resource(self, data):
+    def _resource_target(self, data):
         origin = data.origin or ""
         subscription = None
         if origin.startswith("Subscribe|"):
@@ -140,6 +140,11 @@ class EpisodeGuard(_PluginBase):
         expected, allow_extra = self._target(data, subscription)
         custom_words = getattr(subscription, "custom_words", None)
         words = custom_words.split("\n") if custom_words else None
+        return {"expected": expected, "allow_extra": allow_extra, "words": words,
+                "original_custom_words": custom_words}
+
+    def _load_resource(self, data, target=None):
+        target = target if target is not None else self._resource_target(data)
         torrent = data.context.torrent_info
         if not torrent.enclosure:
             raise CheckUnavailable("资源没有可用的下载地址")
@@ -175,8 +180,7 @@ class EpisodeGuard(_PluginBase):
             except ValueError:
                 raise CheckUnavailable("种子根目录不是有效的相对路径") from None
             root /= folder
-        return {"expected": expected, "allow_extra": allow_extra, "words": words,
-                "original_custom_words": custom_words, "content": content,
+        return {**target, "content": content,
                 "files": files, "videos": videos, "root": root}
 
     def _inspect(self, data):
@@ -189,10 +193,36 @@ class EpisodeGuard(_PluginBase):
         return check_files(resource["expected"], parsed, allow_extra_episodes=resource["allow_extra"]), describe(resource["expected"])
 
     def _prepare_inheritance(self, data):
-        """Freeze a precise single-file mapping before MP adds the task."""
+        """Leave confirmed packs native; freeze words only for a single episode."""
+        native = Verdict("native", "已确认多集合集，直接放行；使用 MP 原生下载和整理，不生成插件覆盖词")
+        meta = data.context.meta_info
+        seasons = self._bounded_numbers(meta, "season")
+        declared = self._bounded_numbers(meta, "episode")
+        requested = set(data.episodes or ())
+        if any(type(e) is not int or e < 0 or e > 10000 for e in requested):
+            raise CheckUnavailable("本次下载的目标集数无效")
+        # MP may select one missing episode out of a pack. The candidate's
+        # declared range still identifies it as a pack, independently of that subset.
+        if len(seasons) > 1 or len(declared) > 1 or len(requested) > 1:
+            return native, "多季／多集合集"
+        target = self._resource_target(data)
+        if len(target["expected"]) > 1:
+            return native, describe(target["expected"])
+        resource = self._load_resource(data, target)
+        identified = set()
+        for name in resource["videos"]:
+            file_meta = MetaInfoPath(resource["root"] / name, custom_words=resource["words"])
+            if file_meta.type == MediaType.TV:
+                file_seasons = self._bounded_numbers(file_meta, "season")
+                file_episodes = self._bounded_numbers(file_meta, "episode")
+                if len(file_seasons) > 1 or len(file_episodes) > 1:
+                    return native, describe(target["expected"])
+                if file_seasons and file_episodes:
+                    identified.add((file_seasons[0], file_episodes[0]))
+                if len(identified) > 1:
+                    return native, describe(target["expected"])
         if not self._snapshots or self._snapshot_error:
             raise OverrideUnavailable("任务识别快照未就绪，未允许未经覆盖的资源下载")
-        resource = self._load_resource(data)
         from app.core.meta.words import WordsMatcher
         from app.db.systemconfig_oper import SystemConfigOper
         from app.schemas.types import SystemConfigKey
@@ -256,7 +286,10 @@ class EpisodeGuard(_PluginBase):
             data.reason = verdict.reason
         title = context.torrent_info.title or "未命名资源"
         site = context.torrent_info.site_name or ""
-        if verdict.status not in ("match", "inherit"):
+        if verdict.status == "native":
+            logger.info(f"【{self.plugin_name}】合集原生放行：{title}；{verdict.reason}")
+            self._record(title, site, expected, verdict, False, result="放行（合集原生整理）")
+        elif verdict.status not in ("match", "inherit"):
             logger.info(f"【{self.plugin_name}】{'跳过' if blocked else '放行未校验资源'}：{title}；{verdict.reason}")
             self._record(title, site, expected, verdict, blocked)
         elif verdict.status == "inherit":
@@ -436,7 +469,7 @@ class EpisodeGuard(_PluginBase):
             {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "v-show": "mode === 'validate'"},
              "text": "比较识别后的文件与标题季集。明确冲突始终跳过；无法识别、读取失败或磁力超时按开关处理。"},
             {"component": "VAlert", "props": {"type": "info", "variant": "tonal", "v-show": "mode === 'inherit'"},
-             "text": "信任搜索匹配的季集，自动生成单集任务专属识别词。仅支持一个目标集号和一个正片；规则无法准备时跳过，不使用校验模式的开关。请使用下载器监控整理。已绑定的规则会保留在下载历史中。"},
+             "text": "单集自动生成任务识别词，沿用搜索匹配的季集。明确的多集／多季合集直接放行，使用 MP 原生下载和整理，保留原有识别词，不提供插件季集覆盖保护。无法确认类型或单集规则准备失败仍跳过，不使用校验模式的开关。单集请使用下载器监控整理。已绑定的规则保留在下载历史中。"},
             {"component": "VAlert", "props": {"type": "warning", "variant": "tonal"},
              "text": "只检查 MP 提供的资源：种子地址沿用 MP 获取逻辑，磁力链只获取 BT 元数据，不抓取详情页。每条磁力独立最多等 15 秒，前面资源超时不影响后面资源。"},
         ]}], {"enabled": False, "mode": "validate", "only_subscriptions": True, "block_unverifiable": True}

@@ -83,12 +83,98 @@ class InheritTests(unittest.TestCase):
             self.plugin.on_resource_download(item)
             self.assertTrue(item.event_data.cancel)
 
-    def test_multiple_targets_and_multiple_videos_never_guess_mapping(self):
+    def test_declared_packs_pass_before_metadata_or_snapshot_access(self):
+        for blocked in (True, False):
+            self.enable_inherit(blocked)
+            self.plugin._snapshots = None
+            self.plugin._snapshot_error = True
+            self.guard.SubscribeChain.reset_mock()
+            self.guard.DownloadChain.reset_mock()
+            for candidate, episodes in ((meta(2, tuple(range(1, 11))), tuple(range(1, 11))),
+                                        (meta(1, (49, 50)), (50,)),
+                                        (meta(), (49, 50))):
+                item = event(candidate=candidate, episodes=episodes)
+                self.plugin.on_resource_download(item)
+                self.assertFalse(item.event_data.cancel)
+                self.assertEqual(self.plugin._records[0]["result"], "放行（合集原生整理）")
+            self.guard.SubscribeChain.assert_not_called()
+            self.guard.DownloadChain.assert_not_called()
+            self.guard.torrent_hashes.assert_not_called()
+            self.guard.MetaInfoPath.assert_not_called()
+
+    def test_unlabelled_season_uses_subscription_range_without_fetching_metadata(self):
+        self.enable_inherit(True)
+        item = event(candidate=meta(1, ()), episodes=())
+        self.plugin.on_resource_download(item)
+        self.assertFalse(item.event_data.cancel)
+        self.guard.DownloadChain.assert_not_called()
+        self.assertFalse(self.plugin._snapshots.matching_hash(HASH))
+
+    def test_multiple_seasons_pass_native(self):
+        self.enable_inherit(True)
+        candidate = meta()
+        candidate.season_list = [1, 2]
+        candidate.end_season = 2
+        item = event(candidate=candidate)
+        self.plugin.on_resource_download(item)
+        self.assertFalse(item.event_data.cancel)
+        self.guard.DownloadChain.assert_not_called()
+
+    def test_distinct_file_episodes_pass_without_preparing_words(self):
+        for blocked in (True, False):
+            self.enable_inherit(blocked)
+            self.guard.TorrentHelper.return_value.get_fileinfo_from_torrent_content.return_value = (
+                "", [NAME, "other.S03E01.mkv"])
+            self.guard.MetaInfoPath.side_effect = [meta(3, (2,)), meta(3, (1,))]
+            item = event()
+            self.plugin.on_resource_download(item)
+            self.assertFalse(item.event_data.cancel)
+            self.assertFalse(self.plugin._snapshots.matching_hash(HASH))
+        self.guard.torrent_hashes.assert_not_called()
+
+    def test_multi_episode_file_passes_without_single_episode_override(self):
+        self.enable_inherit(True)
+        self.guard.MetaInfoPath.return_value = meta(3, (1, 2))
+        item = event()
+        self.plugin.on_resource_download(item)
+        self.assertFalse(item.event_data.cancel)
+        self.guard.torrent_hashes.assert_not_called()
+        self.assertFalse(self.plugin._snapshots.matching_hash(HASH))
+
+    def test_multiple_unknown_videos_or_same_episode_versions_still_skip(self):
         self.enable_inherit(False)
-        for files, candidate, episodes in [([NAME], meta(1, (49, 50)), (49, 50)),
-                                            ([NAME, "other.S03E01.mkv"], meta(), (50,))]:
-            self.guard.TorrentHelper.return_value.get_fileinfo_from_torrent_content.return_value = ("", files)
-            item = event(candidate=candidate, episodes=episodes)
+        self.guard.TorrentHelper.return_value.get_fileinfo_from_torrent_content.return_value = (
+            "", [NAME, "other.mkv"])
+        for parsed in ([meta(None, ()), meta(None, ())], [meta(), meta()]):
+            self.guard.MetaInfoPath.side_effect = parsed
+            item = event()
+            self.plugin.on_resource_download(item)
+            self.assertTrue(item.event_data.cancel)
+        self.assertFalse(self.plugin._snapshots.matching_hash(HASH))
+
+    def test_single_video_subtitles_and_sample_keep_inheritance(self):
+        self.enable_inherit(True)
+        self.guard.TorrentHelper.return_value.get_fileinfo_from_torrent_content.return_value = (
+            "", [NAME, NAME.replace(".mkv", ".srt"), "Sample/sample.mkv"])
+        item = event()
+        self.plugin.on_resource_download(item)
+        self.assertFalse(item.event_data.cancel)
+        self.assertEqual(self.plugin._snapshots.matching_hash(HASH)[0]["target"], [1, 50])
+
+    def test_existing_veto_of_pack_is_respected(self):
+        self.enable_inherit(True)
+        item = event(candidate=meta(1, (49, 50)), episodes=(49, 50))
+        item.event_data.cancel = True
+        item.event_data.reason = "another plugin"
+        self.plugin.on_resource_download(item)
+        self.assertTrue(item.event_data.cancel)
+        self.assertEqual(item.event_data.reason, "another plugin")
+        self.guard.DownloadChain.assert_not_called()
+
+    def test_invalid_multi_episode_target_still_skips(self):
+        self.enable_inherit(False)
+        for episodes in ((50, 10001), (50, "51")):
+            item = event(episodes=episodes)
             self.plugin.on_resource_download(item)
             self.assertTrue(item.event_data.cancel)
         self.assertFalse(self.plugin._snapshots.matching_hash(HASH))
